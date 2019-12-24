@@ -1,4 +1,5 @@
 import socket, neopixel, machine
+from time import sleep
 
 n_led = 50
 np = neopixel.NeoPixel(machine.Pin(4), 50)
@@ -17,6 +18,7 @@ def run():
                 for i in range(n_led):
                     np[i] = (body[i * 3 + 1], body[i * 3], body[i * 3 + 2])
                 np.write()
+            sleep(0.01)
     except:
         s.close()
         raise

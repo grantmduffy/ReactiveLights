@@ -1,25 +1,23 @@
 import pyaudio
 import numpy as np
-from matplotlib import pyplot as plt
-from matplotlib import animation
 from threading import Thread, Lock
 from matplotlib.colors import hsv_to_rgb
 import socket
 from time import sleep
 import tkinter as tk
-import sys
-
+import serial
+from serial.tools import list_ports
 
 buffer_size = 512
 sample_rate = 16000
 led_n = 50
-# bass_gain = 0.5
-# mid_gain = 2.0
-# treble_gain = 10.0
-# overall_gain = 0.15
-# gamma = 3.0
 fade_rate = 0.003
 
+try:
+    with open('target_ip.txt', 'r') as f:
+        target_ip = f.read()
+except FileNotFoundError:
+    target_ip = '127.0.0.1'
 
 win = tk.Tk()
 win.title('Reactive Light Settings')
@@ -33,6 +31,12 @@ treble_gain_ = tk.DoubleVar()
 treble_gain_.set(100)
 gamma_ = tk.DoubleVar()
 gamma_.set(3.0)
+com_port_ = tk.StringVar()
+com_port_.set('None')
+port_options = {p.device for p in list_ports.comports()}
+print(port_options)
+ssid_ = tk.StringVar()
+password_ = tk.StringVar()
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -52,6 +56,7 @@ freq = np.abs(np.fft.fftfreq(buffer_size, d=1.0 / sample_rate))
 bass_mid_freq = 250.0
 mid_treble_freq = 4000.0
 run = True
+paused = False
 levels = []
 wave = np.zeros(buffer_size)
 amp = np.zeros(buffer_size)
@@ -62,21 +67,16 @@ hsv_values = np.ones((led_n, 3))
 hsv_values[:, 0] = np.linspace(0, 1, led_n)
 rgb_values = np.zeros((led_n, 3))
 
-scat = plt.scatter(np.arange(led_n) * 3 / 50, np.zeros(led_n), c=np.zeros((led_n, 3)))
-levels_line = plt.plot([0, 1, 2, 3], [0, 0, 0, 0])[0]
-hsv_line = plt.plot(np.linspace(0, 3, led_n), hsv_values[:, 0])[0]
-plt.ylim(-0.1, 1.1)
-
-
 def audio_worker():
     global wave, amp, bass, mid, treble, levels, run
     while run:
+        while paused:
+            pass
         wave = np.fromstring(stream.read(buffer_size), np.float32)
         amp = np.abs(np.fft.fft(wave)) * overall_gain_.get() / 100
         bass = np.average(amp[freq < bass_mid_freq])
         mid = np.average(amp[(freq < mid_treble_freq) * (freq > bass_mid_freq)])
         treble = np.average(amp[(freq > mid_treble_freq)])
-        # print(bass.shape, mid.shape, treble.shape)
         levels.append((bass, mid, treble))
     stream.close()
 
@@ -84,6 +84,8 @@ def audio_worker():
 def udp_worker():
     global rgb_values, hsv_values, run
     while run:
+        while paused:
+            pass
         current_levels = np.array([bass * bass_gain_.get() / 10, mid * mid_gain_.get() / 10,
                                    treble * treble_gain_.get() / 10, bass * bass_gain_.get() / 10])
         lightness = np.interp(np.linspace(0, 3, led_n), [0, 1, 2, 3], current_levels)
@@ -104,17 +106,52 @@ def udp_worker():
         data[:led_n * 3] = (rgb_values.flatten() * 255).astype(np.uint8)
         packet = b'Art-Net\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' + data.tobytes()
 
-        s.sendto(packet, ('192.168.0.34', 6454))
+        s.sendto(packet, (target_ip, 6454))
         sleep(1/20)
 
 
-def animate(i):
-    current_levels = np.array([bass * bass_gain_.get() / 10, mid * mid_gain_.get() / 10,
-                               treble * treble_gain_.get() / 10, bass * bass_gain_.get() / 10])
-    scat.set_color(rgb_values)
-    levels_line.set_ydata(current_levels)
-    hsv_line.set_ydata(hsv_values[:, 0])
-    return levels_line, scat
+def update_wifi():
+    global paused, target_ip
+
+    def readlines():
+        while not ser.in_waiting:
+            pass
+        out = b''
+        while ser.in_waiting:
+            out += ser.read()
+        return out
+
+    paused = True
+    for i in range(20):
+        devices = [x.device for x in list_ports.comports()]
+        if devices:
+            print(devices)
+            break
+        sleep(0.1)
+
+    port = com_port_.get()
+    ssid = ssid_.get()
+    psk = password_.get()
+
+    ser = serial.Serial(port, 115200)
+    ser.write(b'\x03\r\n')
+    sleep(1)
+    ser.write(f'ssid = "{ssid}"\r\npassword = "{psk}"\r\n'.encode('utf-8'))
+    ser.write(b'import network\r\nsta_if = network.WLAN(network.STA_IF)\r\nfrom machine import Pin\r\n'
+              b'from time import sleep\r\nled_pin = Pin(2, Pin.OUT)\r\nsta_if.active(True)\r\n'
+              b'sta_if.connect(ssid, password)\r\nwhile not sta_if.isconnected():\r\nled_pin.off()\r\n'
+              b'sleep(0.2)\r\nled_pin.on()\r\nsleep(0.2)\r\n\x08\r\n')
+    readlines()
+    ser.write(b'led_pin.on()\r\nprint(sta_if.ifconfig())\r\n')
+    response = readlines()
+    print(response.decode())
+    ip_address = response.decode().split('\r\n')[-2][1:-1].split(', ')[0][1:-1]
+    ser.write(b'run()\r\n')
+    ser.close()
+    target_ip = ip_address
+    with open('target_ip.txt', 'w') as f:
+        f.write(target_ip)
+    paused = False
 
 
 def stop():
@@ -129,9 +166,6 @@ audio_thread.start()
 
 udp_thread = Thread(target=udp_worker)
 udp_thread.start()
-
-# ani = animation.FuncAnimation(plt.gcf(), animate)
-# plt.show()
 
 row = tk.Frame(win)
 row.pack(fill=tk.X, expand=True)
@@ -153,11 +187,16 @@ row = tk.Frame(win)
 row.pack(fill=tk.X, expand=True)
 tk.Label(row, text='Gamma Correction').pack(side=tk.LEFT)
 tk.Scale(row, variable=gamma_, from_=0.0, to=5.0, resolution=0.1, length=500, orient=tk.HORIZONTAL).pack(side=tk.RIGHT)
+
+row = tk.Frame(win)
+row.pack(fill=tk.X, expand=True)
+tk.Label(row, text='COM Port').pack(side=tk.LEFT)
+tk.OptionMenu(row, com_port_, com_port_.get(), *port_options).pack(side=tk.LEFT)
+tk.Label(row, text='WiFI SSID').pack(side=tk.LEFT)
+tk.Entry(row, textvariable=ssid_).pack(side=tk.LEFT)
+tk.Label(row, text='WiFI Password').pack(side=tk.LEFT)
+tk.Entry(row, textvariable=password_).pack(side=tk.LEFT)
+tk.Button(row, text='Update', command=update_wifi).pack(side=tk.LEFT)
+
 win.protocol("WM_DELETE_WINDOW", stop)
 win.mainloop()
-
-# while True:
-#     try:
-#         sleep(10)
-#     except KeyboardInterrupt:
-#         run = False
