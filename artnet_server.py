@@ -21,6 +21,8 @@ except FileNotFoundError:
 
 win = tk.Tk()
 win.title('Reactive Light Settings')
+brightness_ = tk.DoubleVar()
+brightness_.set(100)
 overall_gain_ = tk.DoubleVar()
 overall_gain_.set(15)
 bass_gain_ = tk.DoubleVar()
@@ -102,6 +104,7 @@ def udp_worker():
         rgb_values[rgb_values > 1.0] = 1.0
         rgb_values[rgb_values < 0.0] = 0.0
         rgb_values = rgb_values ** gamma_.get()
+        rgb_values *= brightness_.get() / 100
 
         data = np.zeros(512, dtype=np.uint8)
         data[:led_n * 3] = (rgb_values.flatten() * 255).astype(np.uint8)
@@ -199,6 +202,10 @@ udp_thread.start()
 row = tk.Frame(win)
 row.pack(fill=tk.X, expand=True)
 tk.Label(row, text='Overall Brightness').pack(side=tk.LEFT)
+tk.Scale(row, variable=brightness_, from_=0, to=100, length=500, orient=tk.HORIZONTAL).pack(side=tk.RIGHT)
+row = tk.Frame(win)
+row.pack(fill=tk.X, expand=True)
+tk.Label(row, text='Microphone Sensitivity').pack(side=tk.LEFT)
 tk.Scale(row, variable=overall_gain_, from_=0, to=100, length=500, orient=tk.HORIZONTAL).pack(side=tk.RIGHT)
 row = tk.Frame(win)
 row.pack(fill=tk.X, expand=True)
