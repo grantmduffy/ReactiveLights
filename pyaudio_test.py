@@ -67,11 +67,12 @@ hsv_values = np.ones((led_n, 3))
 hsv_values[:, 0] = np.linspace(0, 1, led_n)
 rgb_values = np.zeros((led_n, 3))
 
+
 def audio_worker():
     global wave, amp, bass, mid, treble, levels, run
     while run:
         while paused:
-            pass
+            sleep(0.5)
         wave = np.fromstring(stream.read(buffer_size), np.float32)
         amp = np.abs(np.fft.fft(wave)) * overall_gain_.get() / 100
         bass = np.average(amp[freq < bass_mid_freq])
@@ -85,7 +86,7 @@ def udp_worker():
     global rgb_values, hsv_values, run
     while run:
         while paused:
-            pass
+            sleep(0.5)
         current_levels = np.array([bass * bass_gain_.get() / 10, mid * mid_gain_.get() / 10,
                                    treble * treble_gain_.get() / 10, bass * bass_gain_.get() / 10])
         lightness = np.interp(np.linspace(0, 3, led_n), [0, 1, 2, 3], current_levels)
@@ -110,16 +111,58 @@ def udp_worker():
         sleep(1/20)
 
 
+def setup_wifi(ssid, psk, port='COM13'):
+    with serial.Serial('COM13', 115200) as ser:
+
+        def readlines():
+            while not ser.in_waiting:
+                pass
+            out = b''
+            while ser.in_waiting:
+                out += ser.read()
+            # print(str(out).replace('\\r\\n', '\\r\\n\n'))
+            return out
+
+        # Stop run()
+        ser.write(b'\x03\r\n')
+        print(readlines(), end='')
+
+        # Imports
+        ser.write(b'import network\r\nfrom machine import Pin\r\nfrom time import sleep\r\n')
+        print(readlines().decode(), end='')
+
+        # Definitions
+        ser.write(f'ssid = "{ssid}"\r\npassword = "{psk}"\r\n'.encode())
+        ser.write(b'sta_if = network.WLAN(network.STA_IF)\r\nled = Pin(2, Pin.OUT)\r\n')
+        print(readlines().decode(), end='')
+
+        # Connect WiFi
+        ser.write(b'sta_if.active(False)\r\nsta_if.active(True)\r\nsta_if.connect(ssid, password)\r\n')
+        print(readlines().decode(), end='')
+
+        # Wait until connected
+        ser.write(b'while not sta_if.isconnected():\r\nled.off()\r\nsleep(0.1)\r\nled.on()\r\nsleep(0.1)\r\n\x08\r\n')
+        print(readlines().decode(), end='')
+        ser.write(b'led.off()\r\nprint("Connected.")\r\n')
+        print(readlines().decode(), end='')
+
+        # Get IP Address
+        sleep(1)
+        print('Getting IP')
+        ser.write(b'sta_if.ifconfig()\r\n')
+        res = readlines()
+        print(res.decode())
+        ip = res.split(b'\r\n')[-2][1:-1].split(b', ')[0][1:-1].decode()
+        print(ip)
+
+        # Start run()
+        ser.write(b'run()\r\n')
+
+        return ip
+
+
 def update_wifi():
     global paused, target_ip
-
-    def readlines():
-        while not ser.in_waiting:
-            pass
-        out = b''
-        while ser.in_waiting:
-            out += ser.read()
-        return out
 
     paused = True
     for i in range(20):
@@ -133,22 +176,8 @@ def update_wifi():
     ssid = ssid_.get()
     psk = password_.get()
 
-    ser = serial.Serial(port, 115200)
-    ser.write(b'\x03\r\n')
     sleep(1)
-    ser.write(f'ssid = "{ssid}"\r\npassword = "{psk}"\r\n'.encode('utf-8'))
-    ser.write(b'import network\r\nsta_if = network.WLAN(network.STA_IF)\r\nfrom machine import Pin\r\n'
-              b'from time import sleep\r\nled_pin = Pin(2, Pin.OUT)\r\nsta_if.active(True)\r\n'
-              b'sta_if.connect(ssid, password)\r\nwhile not sta_if.isconnected():\r\nled_pin.off()\r\n'
-              b'sleep(0.2)\r\nled_pin.on()\r\nsleep(0.2)\r\n\x08\r\n')
-    readlines()
-    ser.write(b'led_pin.on()\r\nprint(sta_if.ifconfig())\r\n')
-    response = readlines()
-    print(response.decode())
-    ip_address = response.decode().split('\r\n')[-2][1:-1].split(', ')[0][1:-1]
-    ser.write(b'run()\r\n')
-    ser.close()
-    target_ip = ip_address
+    target_ip = setup_wifi(ssid, psk, port)
     with open('target_ip.txt', 'w') as f:
         f.write(target_ip)
     paused = False
